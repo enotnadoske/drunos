@@ -16,6 +16,7 @@ namespace ports {
 struct Actions {
     uint32_t out_port = 0;
     uint32_t group_id = 0;
+    //uint32_t tag = 0;
     uint32_t idle_timeout = 0; // timeouts in seconds
     uint32_t hard_timeout = 0; // zero means infinity timeouts
                                // TODO: Not here

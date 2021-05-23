@@ -19,6 +19,7 @@ public:
         auto retic = Retic::get(loader);
         const static auto in_port = oxm::in_port();
         const static auto switch_id = oxm::switch_id();
+        const static auto out_port = oxm::out_port();
         retic->registerPolicy("twoports", fwd(1) + fwd(2));
         retic->registerPolicy("twoinports", (filter(in_port == 2) >> fwd(1)) +
                                           (filter(in_port == 1) >> fwd(2)));
@@ -48,6 +49,22 @@ public:
         retic->registerPolicy("learning-switch",
             link_discovery->getPolicy() | ipv6_dropper >> lswitch
         );
+
+        first_topo_comp a;
+        a.inport << 1;
+        a.sw_id << 1;
+        a.outport << 2;
+        a.type = 2;
+        topo_comp b;
+        b.inport << 1;
+        b.sw_id << 2;
+        b.outport << 2;
+        std::vector<topo_comp> vec;
+        vec.push_back(b);
+        Route c(a,vec);
+        retic->registerPolicy("Route", fwd_route(c));
+
+
     }
 };
 

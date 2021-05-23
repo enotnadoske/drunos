@@ -10,15 +10,90 @@
 #include <boost/variant/static_visitor.hpp>
 #include "api/Packet.hh"
 #include "oxm/openflow_basic.hh"
+#include <utility>
 
 namespace runos {
 namespace retic {
-
+#ifndef TMP
+#define TMP
+class first_topo_comp;
+class topo_comp;
+using route_t = std::pair<first_topo_comp,std::vector<topo_comp>>;
+inline std::map<uint64_t, route_t> route_ids;// map of all routes and their packet_ids
+#endif
 typedef std::chrono::duration<uint32_t> duration;
 
 class Filter {
 public:
     oxm::field<> field;
+};
+
+// static constexpr auto out_port = oxm::out_port();
+//     return modify(out_port << port);
+
+class first_topo_comp {//constructor
+public:
+    uint8_t type;
+    oxm::out_port outport;
+    oxm::switch_id sw_id;
+    oxm::in_port inport;
+    first_topo_comp(){};
+    first_topo_comp(oxm::out_port op){
+        type = 1;
+        outport = op;
+    }
+    first_topo_comp(oxm::in_port in, oxm::switch_id sw, oxm::out_port op){
+        type = 2;
+        inport = in;
+        sw_id = sw;
+        outport = op;
+    }
+    first_topo_comp(const first_topo_comp& a){
+        outport = a.outport;
+        type = a.type;
+        sw_id = a.sw_id;
+        inport = a.inport;
+    }
+};
+
+class topo_comp {//constructor
+public:
+    oxm::out_port outport;
+    oxm::switch_id sw_id;
+    oxm::in_port inport;
+    topo_comp(){};
+    topo_comp(oxm::in_port in, oxm::switch_id sw, oxm::out_port op){
+        //type = 2;
+        inport = in;
+        sw_id = sw;
+        outport = op;
+    }
+    topo_comp(const topo_comp& a){
+        outport = a.outport;
+        sw_id = a.sw_id;
+        inport = a.inport;
+    }
+};
+
+
+
+class Route {//constructor and setting route in map
+private:
+    route_t route;
+    uint64_t route_id;
+public:
+    Route(){
+        std::map <uint64_t, route_t> tmp;
+        route_ids = tmp;
+    };
+    inline
+     uint64_t get_route_id(void){return route_id;};
+    Route(const first_topo_comp& first, const std::vector<topo_comp>& other){
+        route = std::make_pair(first,other);
+
+        route_id = route_ids.size();
+        route_ids.insert({route_id,route});
+    };
 };
 
 class Stop { };
@@ -86,9 +161,22 @@ policy modify(oxm::field<> field) {
 }
 
 inline
+policy fwd_route(Route rt){
+    static constexpr auto route = oxm::route();
+    return modify(route << rt.get_route_id());
+}
+
+inline
 policy fwd(uint32_t port) {
-    static constexpr auto out_port = oxm::out_port();
-    return modify(out_port << port);
+    static constexpr auto route = oxm::route();
+    first_topo_comp first;
+    first.outport << port;
+    std::vector<topo_comp> emp;
+    auto rt = Route(first, emp);
+    uint64_t num = rt.get_route_id();
+    
+    //create this route
+    return modify(route << num);
 };
 
 inline

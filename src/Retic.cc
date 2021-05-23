@@ -15,6 +15,8 @@
 #include "retic/trace_tree.hh"
 #include "PacketParser.hh"
 
+#define PRIO_HIGH 65535
+
 REGISTER_APPLICATION(Retic, {"controller", ""})
 
 using namespace runos;
@@ -103,6 +105,55 @@ void Retic::setMain(std::string new_main) {
 
 namespace runos {
 
+using link_pair = std::pair<std::pair<uint64_t,uint64_t>,std::pair<uint64_t,uint64_t>>;
+std::map<link_pair, std::vector<std::pair<oxm::field_set, uint64_t>>> link_tag;
+
+bool intersects(oxm::field_set m1, oxm::field_set m2){
+    for(auto it : m1){
+        auto tmp = m2.find(it.type());
+        if((tmp) != m2.end()){
+            if (it != *tmp){
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+uint64_t getTag(oxm::field_set match, oxm::switch_id id1, oxm::out_port outport, oxm::switch_id id2, oxm::in_port inport){
+    oxm::field_set tmp1;
+    oxm::field_set tmp2;
+    tmp1.modify(oxm::field<>(id1));
+    tmp1.modify(oxm::field<>(outport));
+    tmp2.modify(oxm::field<>(id2));
+    tmp2.modify(oxm::field<>(inport));
+    uint64_t sw1,sw2,iport,oport;
+    Packet& pkt1(tmp1);
+    Packet& pkt2(tmp2);
+    sw1 = pkt1.load(oxm::switch_id());
+    oport = pkt1.load(oxm::out_port());
+    sw2 = pkt2.load(oxm::switch_id());
+    iport = pkt2.load(oxm::in_port());
+    link_pair lnk({sw1,oport},{sw2,iport});
+    auto m_tags = link_tag[lnk];
+    std::vector<uint64_t> used_tags;
+    if(!m_tags.empty())
+        for (auto it : m_tags){
+            if (intersects(it.first, match)){
+                used_tags.push_back(it.second);
+            }
+        }
+    std::sort(used_tags.begin(),used_tags.end());
+    uint64_t prev = 1;
+    for (auto it : used_tags){
+        if (it == prev){prev++;};
+        if (it > prev){break;}
+    }
+    link_tag[lnk].push_back(std::pair(match, prev));
+    return prev;
+}
+
+
 // TODO: remove code duplication of switch detection in install and installBarrier method
 
 void Of13Backend::install(
@@ -116,6 +167,40 @@ void Of13Backend::install(
         return;
     }
     static const auto ofb_switch_id = oxm::switch_id();
+    static const auto ofb_route_id = oxm::route();
+    std::vector<retic::route_t> routes;
+    std::map<uint64_t, oxm::field_set> rt_act;
+    
+    for(uint64_t i = 0; i < actions.size(); i++){
+        auto route_id_it = actions[i].find(oxm::type(ofb_route_id));//get route id also
+        if (route_id_it != match.end()) {
+            Packet& pkt_iface(match);
+            uint64_t rt_id = pkt_iface.load(ofb_route_id);
+            actions[i].erase(oxm::mask<>(ofb_route_id));
+            auto cur_route = retic::route_ids[rt_id];
+            routes.push_back(cur_route);
+            if(cur_route.first.type == 2 && !cur_route.second.empty()){
+                match.modify(oxm::field<>(cur_route.first.sw_id));
+                oxm::field_set tmp;
+                tmp.modify(oxm::field<>(cur_route.first.outport));
+                rt_act[rt_id] = actions[i];
+
+                actions[i] = tmp;
+            }else{
+                actions[i].modify(oxm::field<>(cur_route.first.outport));
+            }
+            //first dpid actions changed if route
+            //first switch in route
+                //match get more from route
+                //actions create from route
+            //middle route switches
+                //match get more from route
+                //actions create from route
+            //last switch in route
+                //match get more from route
+                //actions create from route
+        }
+    }
     auto switch_id_it = match.find(oxm::type(ofb_switch_id));
     if (switch_id_it != match.end()) {
         Packet& pkt_iface(match);
@@ -125,6 +210,40 @@ void Of13Backend::install(
     } else {
         for (auto [dpid, driver]: m_drivers) {
             install_on(dpid, match, actions, prio, flow_settings);
+        }
+    }
+    if(!rt_act.empty()){
+        for(auto it : rt_act){
+            auto rtt = retic::route_ids[it.first];
+            for(uint64_t it2 = 0; it2 < rtt.second.size()-1; it2++){
+                auto sw = rtt.second[it2].sw_id;
+                auto inport = rtt.second[it2].inport;
+                auto outport = rtt.second[it2].outport;
+                match.modify(oxm::field<>(sw));
+                match.modify(oxm::field<>(inport));
+                oxm::field_set tm;
+                tm.modify(oxm::field<>(outport));
+                std::vector<oxm::field_set> t;
+                t.push_back(tm);
+                Packet& pkt_inface(match);
+                uint64_t dpid = pkt_inface.load(ofb_switch_id);
+                match.erase(oxm::mask<>(ofb_switch_id));
+                uint16_t p = PRIO_HIGH;
+                install_on(dpid, match, t, p, flow_settings);
+
+            }
+            auto sw = rtt.second[rtt.second.size()-1].sw_id;
+            auto inport = rtt.second[rtt.second.size()-1].inport;
+            auto outport = rtt.second[rtt.second.size()-1].outport;
+            match.modify(oxm::field<>(sw));
+            match.modify(oxm::field<>(inport));
+            it.second.modify(oxm::field<>(outport));
+            Packet& pkt_inface(match);
+            uint64_t dpid = pkt_inface.load(ofb_switch_id);
+            match.erase(oxm::mask<>(ofb_switch_id));
+            uint16_t k = PRIO_HIGH;
+            install_on(dpid, match, std::vector<oxm::field_set>{it.second}, k, flow_settings);
+
         }
     }
 }
@@ -156,18 +275,24 @@ void Of13Backend::installBarrier(oxm::field_set match, uint16_t prio) {
 
 void Of13Backend::packetOuts(uint8_t* data, size_t data_len, std::vector<oxm::field_set> actions, uint64_t dpid) {
     static const auto ofb_out_port = oxm::out_port();
+    static const auto ofb_route_id = oxm::route();
     auto driver = m_drivers.at(dpid);
     if (actions.empty()) {
         return;
     }
     for (auto& action: actions) {
         Actions driver_acts{};
-        auto out_port_it = action.find(oxm::type(ofb_out_port));
+        auto out_port_it = action.find(oxm::type(ofb_route_id));
         if (out_port_it != action.end()) {
             Packet& pkt_iface(action);
-            uint32_t out_port = pkt_iface.load(ofb_out_port);
+            uint32_t out_port = pkt_iface.load(ofb_route_id);
             action.erase(oxm::mask<>(ofb_out_port));
-            driver_acts.out_port = out_port;
+            auto rt = retic::route_ids[out_port];
+            oxm::field_set a;
+            a.modify(oxm::field<>(rt.first.outport));
+            Packet& pkt(a);
+            uint32_t op = pkt.load(ofb_out_port);
+            driver_acts.out_port = op;
             driver_acts.set_fields = action;
             driver->packetOut(data, data_len, driver_acts);
         }

@@ -45,6 +45,12 @@ struct out_port : define_type < out_port
                               , 32, uint32_t, uint32_t, false, &detail::print<uint32_t>>
 { };
 
+struct route : define_type  < route
+                                , uint16_t(of::oxm::ns::NON_OPENFLOW)
+                                , uint8_t(of::oxm::non_openflow_fields::ROUTE)
+                                , 64, uint64_t, uint64_t, false, &detail::print<uint64_t> >
+{ };
+
 template< class Final,
           of::oxm::basic_match_fields ID,
           size_t NBITS,
